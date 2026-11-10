@@ -1,0 +1,127 @@
+name: cyy-daily
+
+# 定时：北京时间 11:30（GitHub 只认 UTC，03:30 UTC = 11:30 CST）
+# 另有一条每月 1 号的保活任务，避免公开仓库因 60 天无提交被自动停用 schedule。
+on:
+  schedule:
+    - cron: '30 3 * * *'
+    - cron: '0 3 1 * *'
+  workflow_dispatch:
+    inputs:
+      read_seconds:
+        description: '每次阅读秒数下限（实际取 max(本值, 任务要求) + 0~12 秒抖动）'
+        required: false
+        default: '60'
+      max_tasks:
+        description: '每个账号最多做几条任务（0 = 全部）'
+        required: false
+        default: '0'
+
+permissions:
+  contents: read
+
+# 上一轮没跑完时不再叠一轮
+concurrency:
+  group: cyy-daily
+  cancel-in-progress: false
+
+jobs:
+  run:
+    # 每月 1 号那条 cron 交给下面的 keepalive 任务，不重复跑账号
+    if: github.event_name != 'schedule' || github.event.schedule == '30 3 * * *'
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+
+      - name: 安装依赖
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: 检查账号密钥
+        env:
+          CYY_ACCOUNTS: ${{ secrets.CYY_ACCOUNTS }}
+        run: |
+          if [ -z "$CYY_ACCOUNTS" ]; then
+            echo "::error::没有配置 CYY_ACCOUNTS，请到 Settings > Secrets and variables > Actions 添加"
+            exit 1
+          fi
+          n=$(printf '%s' "$CYY_ACCOUNTS" | tr ';' '\n' | grep -c . || true)
+          echo "账号数量: $n"
+
+      - name: 环境自检（不登录，失败不阻断）
+        continue-on-error: true
+        run: python core.py --check
+
+      - name: 运行任务
+        env:
+          CYY_ACCOUNTS: ${{ secrets.CYY_ACCOUNTS }}
+          CYY_READ_SECONDS: ${{ inputs.read_seconds || '60' }}
+          CYY_MAX_TASKS: ${{ inputs.max_tasks || '0' }}
+          # 账号间隔基准分钟数，实际取 0.8~2.0 倍随机
+          CYY_ACCOUNT_GAP: '6'
+          # 随机化：间隔浮动 / 秒数抖动 / 任务顺序打乱
+          CYY_RANDOMIZE: '1'
+          # 备用通道：若海外 IP 被拦，在 Secrets 里配这个即可整体走代理
+          CYY_STATIC_PROXY: ${{ secrets.CYY_STATIC_PROXY }}
+          PROXY_API: ${{ secrets.PROXY_API }}
+          PLUSPLUS_TOKEN: ${{ secrets.PLUSPLUS_TOKEN }}
+          TZ: Asia/Shanghai
+        run: |
+          set -o pipefail
+          if [ -n "${CYY_STATIC_PROXY:-}" ]; then echo "已启用全局代理"; fi
+          python core.py 2>&1 | tee run.log
+
+      - name: 结果摘要
+        if: always()
+        run: |
+          {
+            echo "### 草原云运行摘要"
+            echo ""
+            echo '```'
+            grep -E "🏁|登录失败|❌ \[主程序\]|未完成该任务|完成 [0-9]+/" run.log | tail -30 || echo "(无匹配行)"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: 上传日志
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: run-log-${{ github.run_id }}
+          path: run.log
+          retention-days: 7
+          if-no-files-found: ignore
+
+      - name: 判定本轮是否全灭
+        if: always()
+        run: |
+          if [ ! -f run.log ]; then exit 0; fi
+          if grep -qE "完成：[1-9]" run.log; then
+            echo "本轮有账号成功"
+          else
+            echo "::error::本轮没有任何账号完成，请查看上方日志（常见原因：境外 IP 被拦 / 密码失效 / 活动换期）"
+            exit 1
+          fi
+
+  keepalive:
+    if: github.event.schedule == '0 3 1 * *'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: 提交保活
+        run: |
+          date -u +"%Y-%m-%dT%H:%M:%SZ" > .keepalive
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add .keepalive
+          git commit -m "chore: keepalive $(date -u +%Y-%m)" || exit 0
+          git push
