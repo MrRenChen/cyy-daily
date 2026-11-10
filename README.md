@@ -4,6 +4,28 @@
 
 ---
 
+## ⚠️ 实测结论（2026-11-10）：当前不可用，卡在地域封禁
+
+已用 `workflow_dispatch` 真实跑过两轮，结论是**海外 runner 的 IP 被平台边缘节点直接拒绝**，与脚本无关：
+
+| 探测目标 | 结果 |
+|---|---|
+| runner 出口 IP | `132.196.22.56` 美国 爱荷华州 得梅因，AS8075 Microsoft |
+| `https://cyy.nmgcyy.com.cn/` | **444** 掐断连接 |
+| `https://cyy.nmgcyy.com.cn/fcpublic/` | **545**，`server: TencentEdgeOne`，body `Error return from script` |
+| `https://cyy.nmgcyy.com.cn/member/login/memberLogin` | **545** 同上 |
+| `https://ya.iyunxh.com/` | 200 正常 |
+| `https://static2-ya.iyunxh.com/` | 200 正常 |
+| `https://nmgrb.y-h5.iyunxh.com/` | 403 被拒 |
+
+`cyy.nmgcyy.com.cn` 托管在腾讯云 EdgeOne，边缘规则只放行中国大陆来源；登录、打卡上报、阅读完成上报都走这个域名，所以脚本报 `[登录] 响应非 JSON: HTTP 545`，四个号全灭。
+
+自检能通过是因为租户配置（`static2-ya.iyunxh.com`）和任务列表（`ya.iyunxh.com`）没设地域限制，容易造成"自检通过=能用"的误判。
+
+**因此定时任务已注释停用**，避免每天必然失败一次。可行的三条路见第六节。
+
+---
+
 ## 一、这套东西怎么工作
 
 ```
@@ -91,17 +113,15 @@ GitHub 的 cron 是"尽力而为"，03:30 UTC 的任务实际可能在 11:30–1
 
 ---
 
-## 六、GPU 以外最要紧的事：IP 被拦怎么办
+## 六、地域封禁怎么办（三选一）
 
-按成本从低到高：
+| 方案 | 出口 IP | 可行性 | 成本 | 说明 |
+|---|---|---|---|---|
+| **A. 手机 Termux（已在跑）** | 家庭宽带 | ✅ 已验证 | 0 | 旧手机上已经部署好并跑通过，最稳 |
+| **B. 国内轻量云服务器** | 中国大陆机房 | ✅ 大概率可行 | ¥10~30/月 | 阿里云/腾讯云轻量，装 python + cron，逻辑与 Termux 完全一样 |
+| **C. 给 GitHub 配国内代理** | 代理出口 | ⚠️ 取决于代理 | ¥0.5~1/GB | 配 `CYY_STATIC_PROXY` Secret 后把 cron 注释去掉；必须是**中国大陆住宅/家宽** IP，机房 IP 仍可能被 EdgeOne 判风险 |
 
-| 办法 | 做法 | 说明 |
-|---|---|---|
-| 加国内代理 | 配 `CYY_STATIC_PROXY` Secret | 最省事，一个代理覆盖 4 个号；注意 4 个号同 IP 会"被判定为一组" |
-| 每号独立代理 | 改 `CYY_ACCOUNTS` 为账号级代理（需改代码传 `CYY_ACCOUNT_PROXIES`） | 最接近真人，成本高 |
-| 换 self-hosted runner | 用旧手机/旧电脑注册 runner，挂到仓库 | 出口是家庭宽带，风控最低，但设备得常在线 |
-
-判断标准很简单：日志里出现 `登录失败` / `滑块` / `完成：0 成功`，基本就是 IP 问题，不是账号问题。
+代理方案的具体操作：把它写成 `http://user:pass@host:port` 或 `socks5://host:port` 存进 `CYY_STATIC_PROXY`，脚本会先验证出口 IP 再干活；配好后把 `daily.yml` 里两行 `# - cron:` 的注释去掉，定时即恢复。
 
 ---
 
