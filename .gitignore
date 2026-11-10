@@ -1,0 +1,11 @@
+# 账号凭据，绝不提交
+accounts.txt
+账号.dat
+账号.dat.dpapi
+界面.json
+
+# 运行时产物
+*.log
+cacert.pem
+__pycache__/
+*.pyc
