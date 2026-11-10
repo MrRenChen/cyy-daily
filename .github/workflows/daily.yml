@@ -1,11 +1,16 @@
 name: cyy-daily
 
 # 定时：北京时间 11:30（GitHub 只认 UTC，03:30 UTC = 11:30 CST）
-# 另有一条每月 1 号的保活任务，避免公开仓库因 60 天无提交被自动停用 schedule。
+#
+# ⚠️ 2026-11-10 实测：runner 出口 IP 在美国（132.196.22.56, Azure），
+#    而 cyy.nmgcyy.com.cn 由腾讯云 EdgeOne 托管，对非中国大陆来源直接返回
+#    545 "Error return from script"，登录接口根本到不了源站。
+#    因此定时任务暂时停用，避免每天必然失败一次。确认拿到中国大陆出口 IP
+#    （在 Secrets 里配 CYY_STATIC_PROXY）后，把下面两行 cron 的注释去掉即可恢复。
 on:
-  schedule:
-    - cron: '30 3 * * *'
-    - cron: '0 3 1 * *'
+  # schedule:
+  #   - cron: '30 3 * * *'
+  #   - cron: '0 3 1 * *'
   workflow_dispatch:
     inputs:
       read_seconds:
